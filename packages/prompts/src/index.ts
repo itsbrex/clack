@@ -675,7 +675,56 @@ export const log = {
 	},
 };
 
-export const spinner = () => {
+const prefix = `${color.gray(S_BAR)}  `;
+export const stream = {
+	message: async (
+		iterable: Iterable<string> | AsyncIterable<string>,
+		{ symbol = color.gray(S_BAR) }: LogMessageOptions = {}
+	) => {
+		process.stdout.write(`${color.gray(S_BAR)}\n${symbol}  `);
+		let lineWidth = 3;
+		for await (let chunk of iterable) {
+			chunk = chunk.replace(/\n/g, `\n${prefix}`);
+			if (chunk.includes('\n')) {
+				lineWidth = 3 + strip(chunk.slice(chunk.lastIndexOf('\n'))).length;
+			}
+			const chunkLen = strip(chunk).length;
+			if (lineWidth + chunkLen < process.stdout.columns) {
+				lineWidth += chunkLen;
+				process.stdout.write(chunk);
+			} else {
+				process.stdout.write(`\n${prefix}${chunk.trimStart()}`);
+				lineWidth = 3 + strip(chunk.trimStart()).length;
+			}
+		}
+		process.stdout.write('\n');
+	},
+	info: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.message(iterable, { symbol: color.blue(S_INFO) });
+	},
+	success: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.message(iterable, { symbol: color.green(S_SUCCESS) });
+	},
+	step: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.message(iterable, { symbol: color.green(S_STEP_SUBMIT) });
+	},
+	warn: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.message(iterable, { symbol: color.yellow(S_WARN) });
+	},
+	/** alias for `log.warn()`. */
+	warning: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.warn(iterable);
+	},
+	error: (iterable: Iterable<string> | AsyncIterable<string>) => {
+		return stream.message(iterable, { symbol: color.red(S_ERROR) });
+	},
+};
+
+export interface SpinnerOptions {
+	indicator?: 'dots' | 'timer';
+}
+
+export const spinner = ({ indicator = 'dots' }: SpinnerOptions = {}) => {
 	const frames = unicode ? ['◒', '◐', '◓', '◑'] : ['•', 'o', 'O', '0'];
 	const delay = unicode ? 80 : 120;
 	const isCI = process.env.CI === 'true';
@@ -685,6 +734,7 @@ export const spinner = () => {
 	let isSpinnerActive = false;
 	let _message = '';
 	let _prevMessage: string | undefined = undefined;
+	let _origin: number = performance.now();
 
 	const handleExit = (code: number) => {
 		const msg = code > 1 ? 'Something went wrong' : 'Canceled';
@@ -725,13 +775,21 @@ export const spinner = () => {
 		return msg.replace(/\.+$/, '');
 	};
 
+	const formatTimer = (origin: number): string => {
+		const duration = (performance.now() - origin) / 1000;
+		const min = Math.floor(duration / 60);
+		const secs = Math.floor(duration % 60);
+		return min > 0 ? `[${min}m ${secs}s]` : `[${secs}s]`;
+	};
+
 	const start = (msg = ''): void => {
 		isSpinnerActive = true;
 		unblock = block();
 		_message = parseMessage(msg);
+		_origin = performance.now();
 		process.stdout.write(`${color.gray(S_BAR)}\n`);
 		let frameIndex = 0;
-		let dotsTimer = 0;
+		let indicatorTimer = 0;
 		registerHooks();
 		loop = setInterval(() => {
 			if (isCI && _message === _prevMessage) {
@@ -740,10 +798,18 @@ export const spinner = () => {
 			clearPrevMessage();
 			_prevMessage = _message;
 			const frame = color.magenta(frames[frameIndex]);
-			const loadingDots = isCI ? '...' : '.'.repeat(Math.floor(dotsTimer)).slice(0, 3);
-			process.stdout.write(`${frame}  ${_message}${loadingDots}`);
+
+			if (isCI) {
+				process.stdout.write(`${frame}  ${_message}...`);
+			} else if (indicator === 'timer') {
+				process.stdout.write(`${frame}  ${_message} ${formatTimer(_origin)}`);
+			} else {
+				const loadingDots = '.'.repeat(Math.floor(indicatorTimer)).slice(0, 3);
+				process.stdout.write(`${frame}  ${_message}${loadingDots}`);
+			}
+
 			frameIndex = frameIndex + 1 < frames.length ? frameIndex + 1 : 0;
-			dotsTimer = dotsTimer < frames.length ? dotsTimer + 0.125 : 0;
+			indicatorTimer = indicatorTimer < frames.length ? indicatorTimer + 0.125 : 0;
 		}, delay);
 	};
 
@@ -758,7 +824,11 @@ export const spinner = () => {
 					? color.red(S_STEP_CANCEL)
 					: color.red(S_STEP_ERROR);
 		_message = parseMessage(msg ?? _message);
-		process.stdout.write(`${step}  ${_message}\n`);
+		if (indicator === 'timer') {
+			process.stdout.write(`${step}  ${_message} ${formatTimer(_origin)}\n`);
+		} else {
+			process.stdout.write(`${step}  ${_message}\n`);
+		}
 		clearHooks();
 		unblock();
 	};
